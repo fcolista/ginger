@@ -18,7 +18,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301 USA
 
 from wok.exception import InvalidParameter, NotFoundError, OperationFailed
-from wok.utils import run_command, wok_log
+from wok.utils import run_command, wok_log, is_openrc
 
 
 def parse_generic_one_item_per_line_output(output):
@@ -335,7 +335,10 @@ class OVSBridgesModel(object):
 
     @staticmethod
     def is_feature_available():
-        cmd = ['systemctl', 'is-active', 'openvswitch.service', '--quiet']
+		if is_openrc:
+	        cmd = ['systemctl', 'is-active', 'openvswitch.service', '--quiet']
+		else:
+	        cmd = ['rc-service', 'ovs-vswitchd', 'status']
         _, _, rc = run_command(cmd, silent=True)
         return rc == 0
 
