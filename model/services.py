@@ -31,7 +31,7 @@ that uses these module functions.
 import re
 
 from wok.exception import NotFoundError, OperationFailed
-from wok.utils import run_command
+from wok.utils import run_command, is_openrc
 
 
 def parse_systemd_cgls_output(output):
@@ -137,6 +137,20 @@ def parse_systemctllist_output(output):
 
     return services
 
+def parse_openrclist_output(output):
+    """Parses the output of 'rc-status --all'.
+
+    Returns:
+        List[str]: list of services.
+
+    """
+    lines = output.splitlines()[1:-2]
+    services = []
+    for line in lines:
+        if ":" not in line:
+            services.append(line.split()[0])
+
+    return services
 
 def run_systemd_command(command):
     """Function that runs systemd commands.
@@ -162,6 +176,29 @@ def run_systemd_command(command):
         )
     return output
 
+def run_openrc_command(command):
+    """Function that runs OpenRC commands.
+	Basically do what run_systemd_command() function does.
+	As first step mught be good to keep them separated, but eventually should be merged
+	in one more agnostic function like run_init_command()
+
+    Args:
+        command (List[str]): the openrc command to be executed.
+
+    Returns:
+        str: Output of the command.
+
+    Raises:
+        OperationFailed if the return code of the command is not 0.
+
+    """
+    output, err, rcode = run_command(command)
+    if rcode != 0:
+        cmd_str = ' '.join(command)
+        raise OperationFailed(
+            'GINSERV00001E', {'cmd': cmd_str, 'err': err}
+        )
+    return output
 
 def get_services_list():
     """Function that returns the services running in the host.
@@ -170,9 +207,14 @@ def get_services_list():
         List[str]: a list of services.
 
     """
-    cmd = ['systemctl', 'list-unit-files', '--no-pager', '--type=service']
-    output = run_systemd_command(cmd)
-    return parse_systemctllist_output(output)
+	if is_openrc:
+		cmd = ['rc-service', '--all' ]
+	    output = run_openrc_command(cmd)
+	    return parse_openrclist_output(output)
+	else:
+	    cmd = ['systemctl', 'list-unit-files', '--no-pager', '--type=service']
+	    output = run_systemd_command(cmd)
+	    return parse_systemctllist_output(output)
 
 
 def service_exists(service):
@@ -182,12 +224,28 @@ def service_exists(service):
         bool: True if exists, False otherwise.
 
     """
-    cmd = ['systemctl', 'show', service, '--property=LoadError']
-    output = run_systemd_command(cmd)
-    return 'No such file or directory' not in output
 
+	if is_openrc:
+		cmd = ['rc-service', '-e', service]
+		output, err, rcode = run_command(cmd)
+		if rcode==0:
+			return True
+		else:
+			return False
+	else:
+	    cmd = ['systemctl', 'show', service, '--property=LoadError']
+    	output = run_systemd_command(cmd)
+		return 'No such file or directory' not in output
 
 def get_service_info(service):
+	# OpenRC does not have many information about a service, so just return if is started or not.
+	if is_openrc:
+		run_openrc_command(['rc-service', 'add', name])
+		run_openrc_command(['rc-service', '-v', name])
+	    cmd = ['rc-service', '-v', service]
+    	output = run_openrc_command(cmd)
+		return parse_openrclist_output(output)
+
     """Retrieves information about an existing service.
 
     Args:
@@ -206,11 +264,13 @@ def get_service_info(service):
             }
 
     """
-    cmd = ['systemctl', 'show', service,
+	else:
+		run_systemd_command(['systemctl', 'enable', name])
+	    cmd = ['systemctl', 'show', service,
            '--property=LoadState,ActiveState,'
            'SubState,Description,UnitFileState,ControlGroup']
-    output = run_systemd_command(cmd)
-    return parse_systemctlshow_output(output)
+    	output = run_systemd_command(cmd)
+		return parse_systemctlshow_output(output)
 
 
 def get_cgroup_info(cgroup):
@@ -277,10 +337,10 @@ class ServiceModel(object):
 
         lookup_dict = get_service_info(name)
         lookup_dict['name'] = name
-        if lookup_dict.get('cgroup'):
-            lookup_dict['cgroup'] = get_cgroup_info(lookup_dict['cgroup'])
-
-        return lookup_dict
+		if not is_openrc:
+	        if lookup_dict.get('cgroup'):
+    	        lookup_dict['cgroup'] = get_cgroup_info(lookup_dict['cgroup'])
+        	return lookup_dict
 
     @staticmethod
     def enable(name):
@@ -290,7 +350,10 @@ class ServiceModel(object):
             name (str): name of the service.
 
         """
-        run_systemd_command(['systemctl', 'enable', name])
+		if is_openrc:
+        	run_openrc_command(['rc-service', 'add', name])
+		else:
+        	run_systemd_command(['systemctl', 'enable', name])
 
     @staticmethod
     def disable(name):
@@ -300,7 +363,10 @@ class ServiceModel(object):
             name (str): name of the service.
 
         """
-        run_systemd_command(['systemctl', 'disable', name])
+		if is_openrc:
+        	run_openrc_command(['rc-service', 'del', name])
+		else:
+	        run_systemd_command(['systemctl', 'disable', name])
 
     @staticmethod
     def start(name):
@@ -310,7 +376,10 @@ class ServiceModel(object):
             name (str): name of the service.
 
         """
-        run_systemd_command(['systemctl', 'start', name])
+		if is_openrc:
+        	run_openrc_command(['rc-service', name, 'start'])
+		else:
+        	run_systemd_command(['systemctl', 'start', name])
 
     @staticmethod
     def stop(name):
@@ -320,7 +389,10 @@ class ServiceModel(object):
             name (str): name of the service.
 
         """
-        run_systemd_command(['systemctl', 'stop', name])
+		if is_openrc:
+        	run_openrc_command(['rc-service', name, 'stop'])
+		else:
+        	run_systemd_command(['systemctl', 'stop', name])
 
     @staticmethod
     def restart(name):
@@ -330,4 +402,7 @@ class ServiceModel(object):
             name (str): name of the service.
 
         """
-        run_systemd_command(['systemctl', 'restart', name])
+		if is_openrc:
+        	run_openrc_command(['rc-service', name, 'restart'])
+		else:
+        	run_systemd_command(['systemctl', 'restart', name])
